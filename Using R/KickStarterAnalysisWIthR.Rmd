@@ -1,0 +1,356 @@
+---
+title: "Assignment 1 File"
+output:
+  html_document:
+    df_print: paged
+---
+\vspace{0.25in}
+
+### Due February 9, 2024
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(tree)
+library(caret)
+set.seed(1)
+```
+
+## Problem Overview
+
+The goal of this homework is hands-on practice with data exploration and cleaning, classification, and model selection. You will:
+
+1.	Set up the dataset by doing some preprocessing and EDA
+2.	Develop logistic regression and tree-based models
+3.	Interpret and evaluate your models
+4.	Make predictions in a test dataset
+
+## Introduction
+
+Kickstarter.com is a crowdfunding platform to help fundraisers attract money for projects. Projects are successful if they earn more money than a user-specified goal. If the project is successful, the fundraiser gets to keep all of the money raised; otherwise, they do not get any of the money. 
+
+The overall goal of your homework assignments for this class is to accurately predict the target variable "success" in a set of projects for which you do not know the labels. This variable is categorical (binary): YES if the project earned more money than the goal, NO otherwise.
+
+
+## Data
+
+There are more than 100,000 Kickstarter.com crowdfunding projects in the dataset. These comprise projects with deadlines from 2009-2014. I have provided you with about 60 features for each project. Descriptions of these variables are given in the data dictionary, which I have also provided.
+ 
+There are six data sets posted on Canvas:
+
+1.	ks_training_X.csv: features for the training instances (projects with deadlines before September 2014).
+2.	ks_training_y.csv: labels for the three target variables for the training instances.
+3.	ks_test_X.csv: features for the test instances (projects with deadlines in September-December 2014). Your goal is to make predictions for the instances in the test set.
+
+For your convenience, I have randomly subsetted the training data into a smaller set with only 10,000 instances. You can use this subset to explore the data more quickly in R. The files are:
+
+4.	small_training_X.csv
+5.	small_training_y.csv
+
+I've made a "fake" test set of y-variable labels (these are all "NO") to make your coding job easier:
+
+6. ks_test_y_FAKE.csv
+
+## Assignment
+
+Please answer the questions below clearly and concisely, providing tables or plots where applicable. Turn in a well-formatted compiled HTML document using R Markdown, containing clear answers to the questions and R code in the appropriate places.
+
+RUBRIC: To receive a passing score on this assignment, you must do the following:
+
+1.  Turn in a well-formatted compiled HTML document using R markdown. 
+2.  Provide clear answers to the questions and the correct R commands as necessary, in the appropriate places. You may answer up to three sub-questions incorrectly (i.e. incorrect R command; missing answer to question) and still receive a P on this assignment (for example, 1(a) counts as one sub-question). 
+3.  The entire document must be clear, concise, and readable. 
+
+Note that this assignment is somewhat open-ended and there are many ways to answer these questions. I don't require that we have exactly the same answers in order for you to receive full credit.
+
+
+```{r loading}
+train_X <- read_csv("small_training_X.csv")  #read the datasets in R
+train_y <- read_csv("small_training_y.csv")
+
+test_X <- read_csv("ks_test_X.csv")
+test_y <- read_csv("ks_test_y_FAKE.csv")
+
+#join the X and y variables
+train <- train_X %>%
+  left_join(train_y, by = "id") %>%
+  mutate(success = as.factor(success),
+         original_set = "tr")
+
+test <- test_X %>%
+  left_join(test_y, by = "id") %>%
+  mutate(success = as.factor(success),
+         original_set = "te")
+
+#stack the training and test data
+
+all_data <- rbind(train, test)
+
+names(all_data)                       #variables used in dataset
+```
+
+## 0: Example answer
+
+What is the mean of the goal variable?
+
+**ANSWER: The mean goal of the project listings in this dataset is $15894.20.**
+
+```{r code0}
+goal_mean <- all_data %>%
+  summarise(mean_goal = mean(goal))
+goal_mean
+```
+
+## 1: Setup
+
+a) Create a new dataset by selecting the following features:
+- goal
+- region
+- category_parent
+- numfaces_project
+- numfaces_creator
+- sentence_counter
+- VERB
+- success (this is the target variable)
+- original_set (this will be used for filtering later)
+
+**ANSWER TO QUESTION 1a HERE:** 
+
+```{r code1a}
+columns = c("goal","region","category_parent","numfaces_project","numfaces_creator","sentence_counter","VERB","success","original_set")
+new_data <- select(all_data,columns)
+names(new_data)
+```
+
+b) Do some preprocessing on the data:
+
+- convert region, category_parent, and success to factors
+- create a new feature called verbs_per_sentence which is the number of verbs per sentence (careful of instances where sentence_counter = 0!)
+- create a new feature called high_for_category which is "YES" if the goal is above-average for the project's category_parent, and "NO" otherwise. Convert this to a factor.
+
+**ANSWER TO QUESTION 1b HERE:** 
+
+
+```{r code1b}
+new_data <- new_data %>%
+          mutate(region = as.factor(region),
+                   category_parent = as.factor(category_parent),
+                   success = as.factor(success),
+                   verbs_per_sentence = ifelse(sentence_counter !=0 ,VERB/sentence_counter,0)) 
+new_data <- new_data %>%
+          group_by(category_parent) %>%
+          mutate(high_for_category = as.factor(ifelse(goal > mean(goal,na.rm = TRUE),"YES","NO"))) %>%
+          ungroup()
+names(new_data)
+```
+
+
+c) Split the data into training, validation, and test. First, separate out the test set by selecting only instances where original_set = te. Separate out the training set by selecting only instances where original_set = tr. Split the training set into 70% train, 30% validation instances. Make sure to drop the original_set variable from all dataframes.
+
+**ANSWER TO QUESTION 1c HERE:** 
+
+```{r code1c}
+data_test <- new_data %>%
+  filter(original_set == 'te') %>%
+  select(-original_set)
+
+data_labeled <- new_data %>%
+  filter(original_set == 'tr') %>%
+  select(-original_set)
+train_insts = sample(nrow(data_labeled), .7*nrow(data_labeled))
+
+#then splits the labeled data into training/valid
+data_train <- data_labeled[train_insts,]
+data_valid <- data_labeled[-train_insts,]
+```
+
+
+
+d) Conduct some preliminary EDA by maing plots using the new training data.
+
+- Make at least one boxplot showing the relationship between success and one of the numeric features.
+- Make at least one two-way table showing the relationship between success and one of the categorical features.
+- Make at least one scatterplot showing the relationship between any two numeric features.
+
+Record any observations about the relationships you see in the data.
+
+**ANSWER TO QUESTION 1d HERE:** 
+
+```{r code1d}
+boxplot(data_train$goal~data_train$success)
+```
+```{r codetable}
+table(data_train$success,data_train$category_parent)
+
+```
+```{r codescatter}
+plot(data_train$goal,data_train$sentence_counter,col=ifelse(data_train$success=="YES",'green', 'red'))
+
+```
+
+## 2: Logistic Regression
+
+a) Using the training data, train a Logistic Regression model to predict success using the following features:
+
+- goal
+- region
+- category_parent
+- numfaces_project
+- numfaces_creator
+- sentence_counter
+- VERB
+- verbs_per_sentence
+- high_for_category
+
+Report the AIC for your model.
+
+HINT: you can write the regression formula as "y ~ ." to indicate that all of the other variables in your dataset should be used as features.
+
+AIC = 8637
+
+```{r code2a}
+log_mod <- glm(success ~ .,
+              data = data_train,
+              family = "binomial")
+summary(log_mod)
+```
+
+b) What is the coefficient for verbs_per_sentence? Provide a precise (numerical) interpretation of the coefficient.
+
+The coefficient of verbs_per_sentence is -0.1238. As average verbs_per_sentence increases by 1 unit in the project description, we expect the log odds of the project being successful to decrease approximately by 0.1238, holding all other variables constant.
+
+c) What is the coefficient for high_for_category.YES? Provide a precise (numerical) interpretation of this coefficient. 
+
+The coefficient of high_for_category.YES is -0.7406. As average goal of a project increases by 1 unit, we expect the log odds of the project being successful to decrease approximately by 0.7406, holding all other variables constant.
+
+d) Use the model to make predictions in the validation data and report the accuracy. You can assume a cutoff of 0.5. Make sure your predictions match the data type/format of the target variable in the validation data!
+
+**ANSWER TO QUESTION 2d HERE:** 
+
+```{r code2d}
+log_preds <- predict(log_mod, newdata = data_valid, type = "response")
+log_class <- factor(ifelse(log_preds >= 0.5, "YES", "NO"))
+
+accuracy <- function(actuals, predictions){
+  
+  #check if the actuals and predictions match
+  #note - they have to be in EXACTLY the same format
+  is_correct <- ifelse(actuals == predictions, 1, 0)
+  
+  #accuracy is the average # of correct classifications
+  accuracy <- mean(is_correct)
+  return(accuracy)
+}
+log_model_accuracy <- accuracy(data_valid$success, log_class)
+print(log_model_accuracy)
+```
+
+## 3: Classification Trees
+
+a. Use the following code to create an unpruned tree (replace YOUR_Y_VAR and YOUR_TRAINING_DATA with the appropriate variable names, then uncomment the lines starting with "full_tree..."). How many terminal nodes are in the full tree? Which variable has the highest information gain (leads to the biggest decrease in impurity)? How do you know?
+
+There are 234 terminal nodes in the full tree, and high_for_category has the highest information gain as it is the first split made in the tree.
+
+```{r code tree_setup}
+library(tree)
+
+mycontrol = tree.control(nrow(train), mincut = 5, minsize = 10, mindev = 0.0005)
+
+full_tree=tree(success~., control = mycontrol, data_train)
+
+full_tree
+
+```
+```{r code}
+terminal_nodes <- sum(full_tree$frame$var == "<leaf>")
+print(paste("Terminal nodes present in full tree are:",terminal_nodes))
+```
+b. Create pruned trees of size 2, 4, 6, 8, 10, 15, 20, 25, 30, 35, 40, 100, and the size of the full (unpruned) tree. Plot fitting curves consisting of the accuracy in the validation and training sets for each pruned tree (assuming a cutoff of 0.5). Make sure the two sets of points are different colors.
+
+Hint: you might want to change the y-axis of your plot from the default by adding the ylim() argument to plot().
+
+**ANSWER TO QUESTION 3b HERE:** 
+
+```{r code3b}
+predictandclassify <- function(tree,prediction_data){
+  tree_preds <- predict(tree,newdata = prediction_data)
+  tree_preds_class <- ifelse(tree_preds[,2] > 0.5, "YES", "NO")
+  acc <- accuracy(tree_preds_class,prediction_data$success)
+  return(acc)
+}
+
+
+size = nrow(full_tree$frame)
+tree_sizes = c(2, 4, 6, 8, 10, 15, 20, 25, 30, 35, 40, 100,size)
+num_sizes <- length(tree_sizes)
+tr_accs = rep(0, num_sizes)
+va_accs = rep(0, num_sizes)
+for (i in c(1:num_sizes)) {
+  inner_size <- tree_sizes[i]
+  pruned_tree <- prune.tree(full_tree, best = inner_size)
+  tr_accs[i] <- predictandclassify(pruned_tree,data_train)
+  va_accs[i] <- predictandclassify(pruned_tree,data_valid)
+}
+
+#pruned tree training dataset accuracy
+print(tr_accs)
+```
+```{r codevalid}
+#pruned tree valid dataset accuracy
+print(va_accs)
+```
+
+```{r codeplot}
+plot(tree_sizes,tr_accs,col="blue",type="l",ylim = c(0,1),ylab="Accuracy")
+lines(tree_sizes,va_accs,col="red")
+```
+c. Which tree size is the best, and how did you select the best one? Report the validation accuracy of your best tree. Save your best tree model as best_tree_mod (you may have to run prune.tree again).
+The full tree is the best tree as the accuracy for the validation data and the train data is better given by this tree.
+
+**ANSWER TO QUESTION 3c HERE:** 
+
+```{r code3c}
+best_tree_mod <- full_tree
+best_tree_train_acc <- predictandclassify(best_tree_mod,data_train)
+best_tree_valid_acc <- predictandclassify(best_tree_mod,data_valid)
+
+print(paste("Best tree train model accuracy is ",best_tree_train_acc," and valid data accuracy is ",best_tree_valid_acc))
+```
+
+## 4: Model Selection and Deployment
+
+a) If you were going to pick one of the two models trained above to make accurate predictions in the test data, which would you pick and why?
+
+As, both the models are giving approximately similar accuracy I will pick the logistic regression model because that gave me a bit more better accuracy of predicting the target variable for valid data as compared to the tree classification model.
+
+b) For the model you have selected, make predictions in the test data and do the classification using a cutoff of 0.5. Write them to a .csv file called success_groupXYZ.csv, where you replace XYZ with your team name (or your own last name if you have not joined a team). Your file should have:
+
+- One column, with a header of x
+- 11308 predictions, one for each test instance
+- Predictions in the format YES/NO
+
+OPTIONAL: submit your predictions to the class contest. If your file does not match these specifications exactly your submission will not be eligible for the leaderboard!
+
+**ANSWER TO QUESTION 4b HERE:** 
+
+```{r code4b}
+test_log_preds <- predict(log_mod, newdata = data_test, type = "response")
+test_log_class <- factor(ifelse(test_log_preds >= 0.5, "YES", "NO"))
+write.table(test_log_class, "success_Team23.csv", row.names = FALSE)
+```
+
+## 5: OPTIONAL ENHANCEMENTS - can be done in teams
+
+If you would like to excel in the contest, you can spend basically infinite time improving your predictions. Your goal should be to predict the values in the test data (for which you do not know the labels) as accurately as possible. Here are some things you can try given just the basics covered in the first few weeks of class. If you have exhausted these possibilities and are wondering where to go next, I'm happy to make more suggestions in office hours.
+
+- Use the full training X and y to train models (Caveats: more training instances will result in slower training time. Also, the model that appears to be "better" with a smaller training set may or may not be better on a larger training set. More later!)
+- Select and/or clean more features (Same caveats as above hold. Also, some features have missing values or other issues, so beware!).
+- Try a more fine-grained set of possible pruning parameters for the decision tree model.
+- Try changing the cutoff for classification.
+
+Include the code you used to generate your enhanced predictions in the code block below.
+
+```{r code5}
+
+```
